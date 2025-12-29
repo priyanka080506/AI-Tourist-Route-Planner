@@ -31,15 +31,10 @@
         <pre id="resultArea">No route calculated yet.</pre>
     </section>
 
-    <section id="mapSection">
-    <h2>Route Map</h2>
-    <div id="map"></div>
-</section>
-
-<script src="map.js"></script>
-<script async
-    src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&callback=initMap">
-</script>
+    <section id="visualMapSection">
+    <h2>Visual Route Map</h2>
+    <canvas id="routeCanvas" width="700" height="400"></canvas>
+    </section>
 
     <script src="script.js"></script>
 </body>

@@ -29,8 +29,8 @@ button {
     border-radius: 5px;
 }
 
-#map {
-    height: 400px;
-    width: 100%;
+#routeCanvas {
+    border: 2px solid #333;
+    background-color: #f9f9f9;
     margin-top: 10px;
 }

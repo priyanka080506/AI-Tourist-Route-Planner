@@ -52,39 +52,7 @@ function generateRoute() {
         remaining = remaining.filter(p => p !== nearest);
     }
 
-    function showRouteOnMap(route) {
-    // Clear old markers and line
-    markers.forEach(m => m.setMap(null));
-    markers = [];
-    if (routeLine) routeLine.setMap(null);
-
-    let path = [];
-
-    route.forEach(place => {
-        let loc = locations[place];
-        path.push(loc);
-
-        let marker = new google.maps.Marker({
-            position: loc,
-            map: map,
-            title: place
-        });
-        markers.push(marker);
-    });
-
-    routeLine = new google.maps.Polyline({
-        path: path,
-        geodesic: true,
-        strokeColor: "#0000FF",
-        strokeOpacity: 1.0,
-        strokeWeight: 3
-    });
-
-    routeLine.setMap(map);
-}
-
     document.getElementById("resultArea").innerText = 
         "Selected Places:\n" + selected.join(" → ") +
         "\n\nOptimized Route:\n" + route.join(" → ");
-        showRouteOnMap(route);
 }
