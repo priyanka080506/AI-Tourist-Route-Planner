@@ -11,6 +11,7 @@ let distanceLabels = [];
 let selectedCity = null;
 let selectedPlaces = [];
 let currentTravelMode = TRAVEL_MODES.car;
+let currentTravelModeKey = 'car'; // Store mode key for OSRM profile
 let optimizedRoute = null;
 
 /**
@@ -146,7 +147,7 @@ function setupTravelModeSelector() {
             <span>${mode.name}</span>
         `;
         
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
             // Remove active class from all buttons
             document.querySelectorAll('.travel-mode-btn').forEach(b => {
                 b.classList.remove('active');
@@ -157,10 +158,11 @@ function setupTravelModeSelector() {
             
             // Update current travel mode
             currentTravelMode = mode;
+            currentTravelModeKey = modeKey;
             
-            // Re-render route if one exists
-            if (optimizedRoute) {
-                renderRoute();
+            // Re-generate route with new travel mode if one exists
+            if (optimizedRoute && selectedPlaces.length >= 2) {
+                await generateRoute();
             }
         });
         
@@ -211,8 +213,8 @@ function initializeMap() {
             }
         }, 100);
         
-        // Show initial message
-        showMapMessage('Select a city and tourist places to generate an optimized route');
+    // Show initial message
+    showMapMessage('Select a city and tourist places to generate an optimized route using real road routing');
         
         console.log('Map initialized successfully');
     } catch (error) {
@@ -234,9 +236,9 @@ function updateMapCenter() {
 }
 
 /**
- * Generate optimized route using heuristic algorithms
+ * Generate optimized route using heuristic algorithms with REAL ROAD ROUTING
  */
-function generateRoute() {
+async function generateRoute() {
     if (selectedPlaces.length < 2) {
         alert('Please select at least 2 tourist places to generate a route.');
         return;
@@ -249,7 +251,7 @@ function generateRoute() {
     }
     
     // Show loading state
-    showMapMessage('Optimizing route using heuristic algorithms...');
+    showMapMessage('Fetching real road routes and optimizing...');
     
     // Clear existing markers and routes
     clearMap();
@@ -265,11 +267,15 @@ function generateRoute() {
     }
     
     try {
-        // Use heuristic-based optimization algorithm
-        optimizedRoute = heuristicOptimizedRoute(
+        // Get OSRM profile for current travel mode
+        const profile = getOSRMProfile(currentTravelModeKey);
+        
+        // Use heuristic-based optimization algorithm with REAL ROAD ROUTING
+        optimizedRoute = await heuristicOptimizedRoute(
             selectedPlaces,
             startPoint,
-            DISTANCE_THRESHOLD_KM
+            DISTANCE_THRESHOLD_KM,
+            profile
         );
         
         if (!optimizedRoute || !optimizedRoute.path || optimizedRoute.path.length < 2) {
@@ -278,20 +284,13 @@ function generateRoute() {
             return;
         }
         
-        // Perform BFS reachability analysis (for demonstration)
-        const reachablePlaces = bfsReachability(
-            selectedPlaces,
-            startPoint,
-            DISTANCE_THRESHOLD_KM * 2
-        );
-        
-        console.log('Route optimized:', optimizedRoute);
-        console.log('Reachable places:', reachablePlaces);
+        console.log('Route optimized with real road routing:', optimizedRoute);
+        console.log('OSRM Profile used:', profile);
         
         // Ensure map is properly sized before rendering
         map.invalidateSize();
         
-        // Render the optimized route
+        // Render the optimized route with actual road geometries
         setTimeout(() => {
             renderRoute();
             displayResults();
@@ -299,13 +298,13 @@ function generateRoute() {
         
     } catch (error) {
         console.error('Error generating route:', error);
-        alert('Error generating route: ' + error.message);
+        alert('Error generating route: ' + error.message + '\nPlease check your internet connection.');
         hideMapMessage();
     }
 }
 
 /**
- * Render route on map with distance markers
+ * Render route on map with REAL ROAD GEOMETRIES and distance markers
  */
 function renderRoute() {
     if (!optimizedRoute || !map) {
@@ -315,40 +314,43 @@ function renderRoute() {
     
     clearMap();
     
-    const routePath = optimizedRoute.path;
     const routeOrder = optimizedRoute.order;
+    const routeSegments = optimizedRoute.routeSegments || [];
     
-    if (!routePath || routePath.length < 2) {
-        console.error('Invalid route path');
+    if (!routeOrder || routeOrder.length < 2) {
+        console.error('Invalid route order');
         return;
     }
     
-    // Draw route segments with distance labels
-    for (let i = 0; i < routePath.length - 1; i++) {
-        const from = routePath[i];
-        const to = routePath[i + 1];
-        const dist = haversineDistance(from, to);
+    // Draw REAL ROAD ROUTE segments using actual geometries from OSRM
+    routeSegments.forEach((segment, idx) => {
+        if (!segment.geometry || !segment.coordinates || segment.coordinates.length === 0) {
+            console.warn('Segment missing geometry, skipping');
+            return;
+        }
         
         // Determine if this is a far segment
-        const isFar = dist > DISTANCE_THRESHOLD_KM;
+        const isFar = segment.distance > DISTANCE_THRESHOLD_KM;
         
-        // Create polyline segment
-        const segment = [[from.lat, from.lng], [to.lat, to.lng]];
-        const polyline = L.polyline(segment, {
+        // Convert coordinates to Leaflet format [lat, lng]
+        const latLngs = segment.coordinates.map(coord => [coord.lat, coord.lng]);
+        
+        // Create polyline using ACTUAL ROAD GEOMETRY (not straight line)
+        const polyline = L.polyline(latLngs, {
             color: isFar ? '#ef4444' : '#2563eb',
-            weight: 5,
-            opacity: 0.9,
+            weight: 6,
+            opacity: 0.85,
             dashArray: isFar ? '10, 10' : null,
             smoothFactor: 1
         }).addTo(map);
         
         routePolylines.push(polyline);
         
-        // Add distance label at midpoint of segment
-        const midLat = (from.lat + to.lat) / 2;
-        const midLng = (from.lng + to.lng) / 2;
+        // Add distance label at midpoint of route segment
+        const midIndex = Math.floor(latLngs.length / 2);
+        const midPoint = latLngs[midIndex];
         
-        const distanceLabel = L.marker([midLat, midLng], {
+        const distanceLabel = L.marker(midPoint, {
             icon: L.divIcon({
                 className: 'distance-label',
                 html: `<div style="
@@ -362,21 +364,26 @@ function renderRoute() {
                     border: 2px solid white;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
                     text-align: center;
-                ">${dist.toFixed(1)} km</div>`,
-                iconSize: [60, 20],
-                iconAnchor: [30, 10]
+                ">${segment.distance.toFixed(1)} km</div>`,
+                iconSize: [70, 24],
+                iconAnchor: [35, 12]
             })
         }).addTo(map);
         
         distanceLabels.push(distanceLabel);
         
+        // Calculate travel time for this segment
+        const segmentTime = segment.duration ? (segment.duration / 60).toFixed(0) : 'N/A';
+        
         // Add popup with detailed info
         polyline.bindPopup(`
-            <strong>Route Segment ${i + 1}</strong><br>
-            Distance: ${dist.toFixed(2)} km<br>
+            <strong>Route Segment ${idx + 1}</strong><br>
+            <strong>Road Distance:</strong> ${segment.distance.toFixed(2)} km<br>
+            <strong>Travel Time:</strong> ${segmentTime} min<br>
             ${isFar ? '<span style="color: #ef4444;">⚠️ Long distance segment</span>' : ''}
+            <br><small>Route follows actual roads</small>
         `);
-    }
+    });
     
     // Add markers for each place in optimized order
     routeOrder.forEach((placeIdx, orderNum) => {
@@ -405,14 +412,17 @@ function renderRoute() {
             })
         }).addTo(map);
         
-        // Calculate distance from previous place if available
+        // Calculate distance from previous place using real route data
         let distanceInfo = '';
         if (orderNum > 0) {
             const prevPlaceIdx = routeOrder[orderNum - 1];
-            const prevPlace = selectedPlaces[prevPlaceIdx];
-            if (prevPlace) {
-                const dist = haversineDistance(prevPlace.coordinates, place.coordinates);
-                distanceInfo = `<br><strong>Distance from previous:</strong> ${dist.toFixed(2)} km`;
+            // Find the route segment connecting previous to current
+            const segment = optimizedRoute.routeSegments.find(s => 
+                s.from === prevPlaceIdx && s.to === placeIdx
+            );
+            if (segment) {
+                const timeMin = segment.duration ? (segment.duration / 60).toFixed(0) : 'N/A';
+                distanceInfo = `<br><strong>Road Distance:</strong> ${segment.distance.toFixed(2)} km<br><strong>Travel Time:</strong> ${timeMin} min`;
             }
         }
         
@@ -426,15 +436,33 @@ function renderRoute() {
     
     // Fit map to show all markers and routes
     if (markers.length > 0) {
-        const allFeatures = [...markers, ...routePolylines];
-        const group = new L.featureGroup(allFeatures);
-        map.fitBounds(group.getBounds().pad(0.15));
+        const allFeatures = [...markers];
+        // Add route polylines if they exist
+        routePolylines.forEach(polyline => {
+            if (polyline && map.hasLayer(polyline)) {
+                allFeatures.push(polyline);
+            }
+        });
+        
+        if (allFeatures.length > 0) {
+            const group = new L.featureGroup(allFeatures);
+            try {
+                map.fitBounds(group.getBounds().pad(0.15));
+            } catch (e) {
+                console.warn('Error fitting bounds:', e);
+                // Fallback: fit to markers only
+                if (markers.length > 0) {
+                    const markerGroup = new L.featureGroup(markers);
+                    map.fitBounds(markerGroup.getBounds().pad(0.1));
+                }
+            }
+        }
     }
     
     // Hide loading message
     hideMapMessage();
     
-    console.log('Route rendered successfully with', routePolylines.length, 'segments');
+    console.log('Route rendered successfully with', routePolylines.length, 'real road route segments');
 }
 
 /**
@@ -446,9 +474,12 @@ function displayResults() {
     const resultsPanel = document.getElementById('resultsPanel');
     resultsPanel.classList.remove('hidden');
     
-    // Calculate statistics
+    // Calculate statistics using REAL ROUTE DATA
     const totalDistance = optimizedRoute.totalDistance;
-    const totalTime = calculateTravelTime(totalDistance, currentTravelMode);
+    // Use actual duration from routing engine if available
+    const totalTime = optimizedRoute.totalDuration 
+        ? calculateTravelTime(totalDistance, currentTravelMode, optimizedRoute.totalDuration)
+        : calculateTravelTime(totalDistance, currentTravelMode);
     const totalCost = calculateTravelCost(totalDistance, currentTravelMode);
     
     // Update statistics
@@ -465,14 +496,17 @@ function displayResults() {
         const place = selectedPlaces[placeIdx];
         if (!place) return;
         
-        // Calculate distance from previous place
+        // Calculate distance from previous place using REAL ROUTE DATA
         let distanceText = '';
         if (orderNum > 0) {
             const prevPlaceIdx = optimizedRoute.order[orderNum - 1];
-            const prevPlace = selectedPlaces[prevPlaceIdx];
-            if (prevPlace) {
-                const dist = haversineDistance(prevPlace.coordinates, place.coordinates);
-                distanceText = `<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(${dist.toFixed(1)} km)</span>`;
+            // Find the route segment connecting previous to current
+            const segment = optimizedRoute.routeSegments.find(s => 
+                s.from === prevPlaceIdx && s.to === placeIdx
+            );
+            if (segment) {
+                const timeMin = segment.duration ? (segment.duration / 60).toFixed(0) : 'N/A';
+                distanceText = `<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(${segment.distance.toFixed(1)} km, ${timeMin} min)</span>`;
             }
         } else {
             distanceText = '<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(Start)</span>';
