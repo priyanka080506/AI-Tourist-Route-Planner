@@ -251,7 +251,7 @@ async function generateRoute() {
     }
     
     // Show loading state
-    showMapMessage('Fetching real road routes and optimizing...');
+    showMapMessage('Optimizing route order... Fetching real road routes...');
     
     // Clear existing markers and routes
     clearMap();
@@ -304,7 +304,38 @@ async function generateRoute() {
 }
 
 /**
- * Render route on map with REAL ROAD GEOMETRIES and distance markers
+ * Get route styling based on travel mode
+ */
+function getRouteStyle(modeKey, isFar) {
+    const styles = {
+        'walk': {
+            color: '#10b981', // Green for walking
+            weight: 4,
+            opacity: 0.8,
+            dashArray: '5, 10', // Dotted line for walking paths
+            lineCap: 'round'
+        },
+        'bike': {
+            color: '#f59e0b', // Orange for cycling
+            weight: 5,
+            opacity: 0.85,
+            dashArray: null, // Solid line
+            lineCap: 'round'
+        },
+        'car': {
+            color: isFar ? '#ef4444' : '#2563eb', // Blue/Red for car
+            weight: 6,
+            opacity: 0.9,
+            dashArray: isFar ? '10, 10' : null, // Dashed if far
+            lineCap: 'round'
+        }
+    };
+    
+    return styles[modeKey] || styles['car'];
+}
+
+/**
+ * Render route on map with REAL ROAD GEOMETRIES and travel mode-specific styling
  */
 function renderRoute() {
     if (!optimizedRoute || !map) {
@@ -316,31 +347,79 @@ function renderRoute() {
     
     const routeOrder = optimizedRoute.order;
     const routeSegments = optimizedRoute.routeSegments || [];
+    const startIndex = optimizedRoute.startIndex;
     
     if (!routeOrder || routeOrder.length < 2) {
         console.error('Invalid route order');
         return;
     }
     
+    // Get starting point
+    const startPoint = selectedPlaces[0]?.coordinates || 
+                      (selectedCity ? CITIES[selectedCity].coordinates : null);
+    
+    // Mark starting point clearly
+    if (startPoint && startIndex !== null && startIndex !== undefined) {
+        const startPlace = selectedPlaces[startIndex];
+        const startCoords = startPlace ? startPlace.coordinates : startPoint;
+        
+        const startMarker = L.marker([startCoords.lat, startCoords.lng], {
+            icon: L.divIcon({
+                className: 'start-marker',
+                html: `<div style="
+                    background: #10b981;
+                    color: white;
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-weight: bold;
+                    font-size: 18px;
+                    border: 4px solid white;
+                    box-shadow: 0 3px 8px rgba(0,0,0,0.5);
+                ">START</div>`,
+                iconSize: [40, 40],
+                iconAnchor: [20, 20]
+            })
+        }).addTo(map);
+        
+        startMarker.bindPopup(`
+            <strong>🚩 Starting Point</strong><br>
+            ${startPlace ? startPlace.name : 'Route Start'}<br>
+            <small>Optimized route begins here</small>
+        `);
+        
+        markers.push(startMarker);
+    }
+    
+    // Get route style based on travel mode
+    const routeStyle = getRouteStyle(currentTravelModeKey, false);
+    
     // Draw REAL ROAD ROUTE segments using actual geometries from OSRM
     routeSegments.forEach((segment, idx) => {
-        if (!segment.geometry || !segment.coordinates || segment.coordinates.length === 0) {
-            console.warn('Segment missing geometry, skipping');
+        if (!segment.coordinates || segment.coordinates.length === 0) {
+            console.warn('Segment missing coordinates, skipping');
             return;
         }
         
         // Determine if this is a far segment
         const isFar = segment.distance > DISTANCE_THRESHOLD_KM;
         
+        // Get style for this segment (considering if it's far)
+        const segmentStyle = getRouteStyle(currentTravelModeKey, isFar);
+        
         // Convert coordinates to Leaflet format [lat, lng]
         const latLngs = segment.coordinates.map(coord => [coord.lat, coord.lng]);
         
-        // Create polyline using ACTUAL ROAD GEOMETRY (not straight line)
+        // Create polyline using ACTUAL ROAD GEOMETRY with travel mode-specific styling
         const polyline = L.polyline(latLngs, {
-            color: isFar ? '#ef4444' : '#2563eb',
-            weight: 6,
-            opacity: 0.85,
-            dashArray: isFar ? '10, 10' : null,
+            color: segmentStyle.color,
+            weight: segmentStyle.weight,
+            opacity: segmentStyle.opacity,
+            dashArray: segmentStyle.dashArray,
+            lineCap: segmentStyle.lineCap,
             smoothFactor: 1
         }).addTo(map);
         
@@ -354,7 +433,7 @@ function renderRoute() {
             icon: L.divIcon({
                 className: 'distance-label',
                 html: `<div style="
-                    background: ${isFar ? '#ef4444' : '#2563eb'};
+                    background: ${segmentStyle.color};
                     color: white;
                     padding: 4px 8px;
                     border-radius: 12px;
@@ -375,20 +454,29 @@ function renderRoute() {
         // Calculate travel time for this segment
         const segmentTime = segment.duration ? (segment.duration / 60).toFixed(0) : 'N/A';
         
+        // Get mode name
+        const modeName = currentTravelMode.name;
+        
         // Add popup with detailed info
         polyline.bindPopup(`
             <strong>Route Segment ${idx + 1}</strong><br>
+            <strong>Mode:</strong> ${modeName}<br>
             <strong>Road Distance:</strong> ${segment.distance.toFixed(2)} km<br>
             <strong>Travel Time:</strong> ${segmentTime} min<br>
             ${isFar ? '<span style="color: #ef4444;">⚠️ Long distance segment</span>' : ''}
-            <br><small>Route follows actual roads</small>
+            <br><small>Route follows ${modeName === 'Walking' ? 'walkable paths' : modeName === 'Bike' ? 'bike paths' : 'motorable roads'}</small>
         `);
     });
     
-    // Add markers for each place in optimized order
+    // Add markers for each place in optimized order (skip starting point if it's already marked)
     routeOrder.forEach((placeIdx, orderNum) => {
         const place = selectedPlaces[placeIdx];
         if (!place) return;
+        
+        // Skip if this is the starting point (already marked)
+        if (placeIdx === startIndex && orderNum === 0) {
+            return;
+        }
         
         const marker = L.marker([place.coordinates.lat, place.coordinates.lng], {
             icon: L.divIcon({
@@ -418,7 +506,7 @@ function renderRoute() {
             const prevPlaceIdx = routeOrder[orderNum - 1];
             // Find the route segment connecting previous to current
             const segment = optimizedRoute.routeSegments.find(s => 
-                s.from === prevPlaceIdx && s.to === placeIdx
+                (s.from === prevPlaceIdx || s.from === 'start') && s.to === placeIdx
             );
             if (segment) {
                 const timeMin = segment.duration ? (segment.duration / 60).toFixed(0) : 'N/A';
@@ -488,13 +576,37 @@ function displayResults() {
     document.getElementById('totalCost').textContent = totalCost > 0 ? `₹${totalCost.toFixed(2)}` : 'N/A';
     document.getElementById('placesCount').textContent = selectedPlaces.length;
     
-    // Display route order
+    // Display route order with starting point highlighted
     const routeList = document.getElementById('routeList');
     routeList.innerHTML = '';
     
+    // Show starting point first
+    if (optimizedRoute.startIndex !== null && optimizedRoute.startIndex !== undefined) {
+        const startPlace = selectedPlaces[optimizedRoute.startIndex];
+        if (startPlace) {
+            const startItem = document.createElement('li');
+            startItem.className = 'route-item';
+            startItem.style.borderLeft = '4px solid #10b981';
+            startItem.style.background = '#f0fdf4';
+            
+            startItem.innerHTML = `
+                <div class="route-number" style="background: #10b981;">START</div>
+                <div class="route-name"><strong>${startPlace.name}</strong> <span style="color: var(--text-secondary); font-size: 0.75rem;">(Starting Point)</span></div>
+            `;
+            
+            routeList.appendChild(startItem);
+        }
+    }
+    
+    // Display route order
     optimizedRoute.order.forEach((placeIdx, orderNum) => {
         const place = selectedPlaces[placeIdx];
         if (!place) return;
+        
+        // Skip starting point if already shown
+        if (placeIdx === optimizedRoute.startIndex && orderNum === 0) {
+            return;
+        }
         
         // Calculate distance from previous place using REAL ROUTE DATA
         let distanceText = '';
@@ -502,14 +614,21 @@ function displayResults() {
             const prevPlaceIdx = optimizedRoute.order[orderNum - 1];
             // Find the route segment connecting previous to current
             const segment = optimizedRoute.routeSegments.find(s => 
-                s.from === prevPlaceIdx && s.to === placeIdx
+                (s.from === prevPlaceIdx || s.from === 'start') && s.to === placeIdx
             );
             if (segment) {
                 const timeMin = segment.duration ? (segment.duration / 60).toFixed(0) : 'N/A';
                 distanceText = `<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(${segment.distance.toFixed(1)} km, ${timeMin} min)</span>`;
             }
         } else {
-            distanceText = '<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(Start)</span>';
+            // This is the first place after start
+            const segment = optimizedRoute.routeSegments.find(s => 
+                s.from === 'start' && s.to === placeIdx
+            );
+            if (segment) {
+                const timeMin = segment.duration ? (segment.duration / 60).toFixed(0) : 'N/A';
+                distanceText = `<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(${segment.distance.toFixed(1)} km, ${timeMin} min)</span>`;
+            }
         }
         
         const listItem = document.createElement('li');

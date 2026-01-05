@@ -241,74 +241,60 @@ function dfsRouteExploration(places, startIdx, visited = new Set(), currentPath 
 }
 
 /**
- * Heuristic-Based Nearest Neighbor Route Optimization using REAL ROAD ROUTES
+ * Fast Heuristic-Based Nearest Neighbor Route Optimization
  * 
- * This is a GREEDY HEURISTIC algorithm that:
- * 1. Always selects the nearest unvisited location based on REAL ROAD DISTANCE
- * 2. Minimizes immediate travel distance using actual road routes (greedy choice)
- * 3. Uses OSRM routing engine to get real road distances, not straight lines
- * 4. Provides O(n²) time complexity vs O(n!) for exhaustive search
+ * OPTIMIZATION STRATEGY:
+ * 1. First: Use Haversine distance for FAST heuristic ordering (instant)
+ * 2. Then: Fetch real routes in PARALLEL for the optimized order (much faster)
  * 
- * Why this heuristic works well:
- * - Uses REAL road distances, not straight-line approximations
- * - Routes follow actual roads, paths, and streets
- * - Different travel modes (walk/bike/car) use appropriate road networks
- * - The algorithm is fast and scalable
- * - Works well with geographic clustering (tourist places in same city)
- * 
- * This is NOT an exact solution but provides near-optimal routes
- * efficiently for practical use cases using REAL ROAD NETWORK DATA.
+ * This approach is MUCH FASTER than fetching routes during optimization:
+ * - Heuristic ordering: O(n²) with instant distance calculations
+ * - Route fetching: Parallel requests for n-1 segments
  * 
  * @param {Array} places - Array of selected place objects with coordinates
  * @param {Object} startPoint - Optional starting location {lat, lng}
- * @param {string} profile - OSRM profile (driving, walking, cycling)
- * @returns {Promise<Object>} Optimized route with order, total distance, route segments, and path
+ * @returns {Object} Optimized route order (fast, uses Haversine for ordering)
  */
-async function heuristicNearestNeighbor(places, startPoint = null, profile = 'driving') {
+function fastHeuristicOrdering(places, startPoint = null) {
     if (places.length === 0) {
-        return { order: [], totalDistance: 0, path: [], routeSegments: [] };
+        return { order: [], path: [], startIndex: null };
     }
     
     if (places.length === 1) {
         return {
             order: [0],
-            totalDistance: 0,
             path: [places[0].coordinates],
-            routeSegments: []
+            startIndex: 0
         };
     }
     
-    // Initialize
     const unvisited = new Set(places.map((_, idx) => idx));
     const order = [];
     const path = [];
-    const routeSegments = []; // Store actual route geometries
-    let totalDistance = 0;
-    let totalDuration = 0;
     let currentIdx;
+    let startIndex = null;
     
-    // Determine starting point using REAL ROUTE DISTANCE
+    // Determine starting point using Haversine (fast)
     if (startPoint) {
-        // Find nearest place to start point using real routes
         let minDist = Infinity;
         let nearestIdx = 0;
         
-        for (let idx = 0; idx < places.length; idx++) {
-            const route = await getRealRoute(startPoint, places[idx].coordinates, profile);
-            const dist = route ? route.distance : haversineDistance(startPoint, places[idx].coordinates);
+        places.forEach((place, idx) => {
+            const dist = haversineDistance(startPoint, place.coordinates);
             if (dist < minDist) {
                 minDist = dist;
                 nearestIdx = idx;
             }
-        }
+        });
         currentIdx = nearestIdx;
+        startIndex = nearestIdx;
         path.push(startPoint);
     } else {
-        // Start with first place
         currentIdx = 0;
+        startIndex = 0;
     }
     
-    // Heuristic: Always move to nearest unvisited location using REAL ROAD DISTANCES
+    // Fast heuristic: Always move to nearest unvisited location (using Haversine)
     while (unvisited.size > 0) {
         order.push(currentIdx);
         path.push(places[currentIdx].coordinates);
@@ -318,69 +304,129 @@ async function heuristicNearestNeighbor(places, startPoint = null, profile = 'dr
             break;
         }
         
-        // Find nearest unvisited place using REAL ROUTE DISTANCE (HEURISTIC DECISION)
+        // Find nearest unvisited place (FAST - uses Haversine)
         let nearestIdx = null;
         let minDist = Infinity;
-        let bestRoute = null;
         
-        // Check all unvisited places using real routing
-        for (const idx of unvisited) {
-            const route = await getRealRoute(
-                places[currentIdx].coordinates,
-                places[idx].coordinates,
-                profile
-            );
-            
-            const dist = route ? route.distance : haversineDistance(
+        unvisited.forEach(idx => {
+            const dist = haversineDistance(
                 places[currentIdx].coordinates,
                 places[idx].coordinates
             );
-            
             if (dist < minDist) {
                 minDist = dist;
                 nearestIdx = idx;
-                bestRoute = route;
             }
-        }
-        
-        // Store route segment if available
-        if (bestRoute) {
-            routeSegments.push({
-                from: currentIdx,
-                to: nearestIdx,
-                distance: bestRoute.distance,
-                duration: bestRoute.duration,
-                geometry: bestRoute.geometry,
-                coordinates: bestRoute.coordinates
-            });
-            totalDistance += bestRoute.distance;
-            totalDuration += bestRoute.duration;
-        } else {
-            // Fallback if routing fails
-            totalDistance += minDist;
-        }
+        });
         
         currentIdx = nearestIdx;
     }
     
     return {
         order: order,
-        totalDistance: totalDistance,
-        totalDuration: totalDuration,
         path: path,
-        routeSegments: routeSegments
+        startIndex: startIndex
+    };
+}
+
+/**
+ * Fetch real routes in parallel for optimized order
+ * @param {Array} places - Array of place objects
+ * @param {Array} order - Optimized order of place indices
+ * @param {Object} startPoint - Optional starting location
+ * @param {string} profile - OSRM profile
+ * @returns {Promise<Array>} Array of route segments with real road data
+ */
+async function fetchRealRoutesInParallel(places, order, startPoint, profile) {
+    const routePromises = [];
+    
+    // Fetch route from start point to first place if startPoint exists
+    if (startPoint && order.length > 0) {
+        const firstPlaceIdx = order[0];
+        routePromises.push(
+            getRealRoute(startPoint, places[firstPlaceIdx].coordinates, profile)
+                .then(route => ({
+                    from: 'start',
+                    to: firstPlaceIdx,
+                    route: route
+                }))
+        );
+    }
+    
+    // Fetch routes between consecutive places in optimized order
+    for (let i = 0; i < order.length - 1; i++) {
+        const fromIdx = order[i];
+        const toIdx = order[i + 1];
+        
+        routePromises.push(
+            getRealRoute(
+                places[fromIdx].coordinates,
+                places[toIdx].coordinates,
+                profile
+            ).then(route => ({
+                from: fromIdx,
+                to: toIdx,
+                route: route
+            }))
+        );
+    }
+    
+    // Wait for all routes to be fetched in parallel
+    const routeResults = await Promise.all(routePromises);
+    
+    // Process results into route segments
+    const routeSegments = [];
+    let totalDistance = 0;
+    let totalDuration = 0;
+    
+    routeResults.forEach(result => {
+        if (result.route) {
+            routeSegments.push({
+                from: result.from,
+                to: result.to,
+                distance: result.route.distance,
+                duration: result.route.duration,
+                geometry: result.route.geometry,
+                coordinates: result.route.coordinates
+            });
+            totalDistance += result.route.distance;
+            totalDuration += result.route.duration;
+        } else {
+            // Fallback: use Haversine if route fetch failed
+            const fromCoords = result.from === 'start' 
+                ? startPoint 
+                : places[result.from].coordinates;
+            const toCoords = places[result.to].coordinates;
+            const dist = haversineDistance(fromCoords, toCoords);
+            
+            routeSegments.push({
+                from: result.from,
+                to: result.to,
+                distance: dist,
+                duration: null,
+                geometry: null,
+                coordinates: [fromCoords, toCoords]
+            });
+            totalDistance += dist;
+        }
+    });
+    
+    return {
+        routeSegments: routeSegments,
+        totalDistance: totalDistance,
+        totalDuration: totalDuration
     };
 }
 
 /**
  * Enhanced Heuristic with Distance Threshold Filtering using REAL ROAD ROUTES
  * 
- * This extends the nearest neighbor heuristic by:
- * - Using REAL ROAD-BASED routing (not straight lines)
- * - Identifying routes that exceed distance thresholds based on actual road distance
- * - Marking long-distance segments for special handling
- * - Providing visual feedback (red lines) for far-away places
- * - Storing actual route geometries for map display
+ * OPTIMIZED APPROACH:
+ * 1. Fast heuristic ordering using Haversine (instant)
+ * 2. Parallel fetching of real routes (much faster than sequential)
+ * 3. Uses REAL ROAD-BASED routing (not straight lines)
+ * 4. Identifies routes that exceed distance thresholds
+ * 5. Stores actual route geometries for map display
  * 
  * @param {Array} places - Array of selected place objects
  * @param {Object} startPoint - Optional starting location
@@ -389,11 +435,20 @@ async function heuristicNearestNeighbor(places, startPoint = null, profile = 'dr
  * @returns {Promise<Object>} Optimized route with distance markers and real route geometries
  */
 async function heuristicOptimizedRoute(places, startPoint = null, threshold = 50, profile = 'driving') {
-    const baseRoute = await heuristicNearestNeighbor(places, startPoint, profile);
-    const farSegments = [];
+    // Step 1: Fast heuristic ordering (instant)
+    const optimizedOrder = fastHeuristicOrdering(places, startPoint);
     
-    // Identify segments that exceed threshold using REAL ROUTE DISTANCES
-    baseRoute.routeSegments.forEach((segment, idx) => {
+    // Step 2: Fetch real routes in parallel (much faster)
+    const routeData = await fetchRealRoutesInParallel(
+        places,
+        optimizedOrder.order,
+        startPoint,
+        profile
+    );
+    
+    // Identify segments that exceed threshold
+    const farSegments = [];
+    routeData.routeSegments.forEach((segment) => {
         if (segment.distance > threshold) {
             farSegments.push({
                 from: segment.from,
@@ -405,7 +460,12 @@ async function heuristicOptimizedRoute(places, startPoint = null, threshold = 50
     });
     
     return {
-        ...baseRoute,
+        order: optimizedOrder.order,
+        path: optimizedOrder.path,
+        startIndex: optimizedOrder.startIndex,
+        routeSegments: routeData.routeSegments,
+        totalDistance: routeData.totalDistance,
+        totalDuration: routeData.totalDuration,
         farSegments: farSegments,
         threshold: threshold,
         profile: profile
@@ -449,7 +509,8 @@ if (typeof module !== 'undefined' && module.exports) {
         haversineDistance,
         bfsReachability,
         dfsRouteExploration,
-        heuristicNearestNeighbor,
+        fastHeuristicOrdering,
+        fetchRealRoutesInParallel,
         heuristicOptimizedRoute,
         calculateTravelTime,
         calculateTravelCost
