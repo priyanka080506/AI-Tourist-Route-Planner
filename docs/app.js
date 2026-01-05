@@ -6,7 +6,8 @@
 // Global state
 let map = null;
 let markers = [];
-let routePolyline = null;
+let routePolylines = [];
+let distanceLabels = [];
 let selectedCity = null;
 let selectedPlaces = [];
 let currentTravelMode = TRAVEL_MODES.car;
@@ -18,7 +19,6 @@ let optimizedRoute = null;
 function init() {
     setupCitySelector();
     setupTravelModeSelector();
-    setupPlaceSelection();
     setupGenerateButton();
     initializeMap();
 }
@@ -188,17 +188,37 @@ function setupGenerateButton() {
  * Initialize Leaflet map
  */
 function initializeMap() {
-    // Default center: Karnataka, India
-    map = L.map('map').setView([12.9716, 77.5946], 7);
-    
-    // Add OpenStreetMap tile layer
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 19
-    }).addTo(map);
-    
-    // Show initial message
-    showMapMessage('Select a city and tourist places to generate an optimized route');
+    try {
+        // Default center: Karnataka, India
+        map = L.map('map', {
+            center: [12.9716, 77.5946],
+            zoom: 7,
+            zoomControl: true,
+            attributionControl: true
+        });
+        
+        // Add OpenStreetMap tile layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 19,
+            minZoom: 5
+        }).addTo(map);
+        
+        // Ensure map is properly sized
+        setTimeout(() => {
+            if (map) {
+                map.invalidateSize();
+            }
+        }, 100);
+        
+        // Show initial message
+        showMapMessage('Select a city and tourist places to generate an optimized route');
+        
+        console.log('Map initialized successfully');
+    } catch (error) {
+        console.error('Error initializing map:', error);
+        alert('Error loading map. Please refresh the page.');
+    }
 }
 
 /**
@@ -222,6 +242,12 @@ function generateRoute() {
         return;
     }
     
+    if (!map) {
+        console.error('Map not initialized');
+        alert('Map is not loaded. Please refresh the page.');
+        return;
+    }
+    
     // Show loading state
     showMapMessage('Optimizing route using heuristic algorithms...');
     
@@ -232,77 +258,125 @@ function generateRoute() {
     const startPoint = selectedPlaces[0]?.coordinates || 
                       (selectedCity ? CITIES[selectedCity].coordinates : null);
     
-    // Use heuristic-based optimization algorithm
-    optimizedRoute = heuristicOptimizedRoute(
-        selectedPlaces,
-        startPoint,
-        DISTANCE_THRESHOLD_KM
-    );
+    if (!startPoint) {
+        alert('Unable to determine starting point. Please select a city.');
+        hideMapMessage();
+        return;
+    }
     
-    // Perform BFS reachability analysis (for demonstration)
-    const reachablePlaces = bfsReachability(
-        selectedPlaces,
-        startPoint,
-        DISTANCE_THRESHOLD_KM * 2
-    );
-    
-    // Render the optimized route
-    renderRoute();
-    
-    // Display results
-    displayResults();
+    try {
+        // Use heuristic-based optimization algorithm
+        optimizedRoute = heuristicOptimizedRoute(
+            selectedPlaces,
+            startPoint,
+            DISTANCE_THRESHOLD_KM
+        );
+        
+        if (!optimizedRoute || !optimizedRoute.path || optimizedRoute.path.length < 2) {
+            alert('Error generating route. Please try again.');
+            hideMapMessage();
+            return;
+        }
+        
+        // Perform BFS reachability analysis (for demonstration)
+        const reachablePlaces = bfsReachability(
+            selectedPlaces,
+            startPoint,
+            DISTANCE_THRESHOLD_KM * 2
+        );
+        
+        console.log('Route optimized:', optimizedRoute);
+        console.log('Reachable places:', reachablePlaces);
+        
+        // Ensure map is properly sized before rendering
+        map.invalidateSize();
+        
+        // Render the optimized route
+        setTimeout(() => {
+            renderRoute();
+            displayResults();
+        }, 100);
+        
+    } catch (error) {
+        console.error('Error generating route:', error);
+        alert('Error generating route: ' + error.message);
+        hideMapMessage();
+    }
 }
 
 /**
- * Render route on map
+ * Render route on map with distance markers
  */
 function renderRoute() {
-    if (!optimizedRoute || !map) return;
+    if (!optimizedRoute || !map) {
+        console.error('Cannot render route: optimizedRoute or map is null');
+        return;
+    }
     
     clearMap();
     
     const routePath = optimizedRoute.path;
     const routeOrder = optimizedRoute.order;
     
-    // Create polyline coordinates
-    const polylineCoords = routePath.map(point => [point.lat, point.lng]);
+    if (!routePath || routePath.length < 2) {
+        console.error('Invalid route path');
+        return;
+    }
     
-    // Draw normal route segments (blue)
-    const normalSegments = [];
-    const farSegments = [];
-    
+    // Draw route segments with distance labels
     for (let i = 0; i < routePath.length - 1; i++) {
         const from = routePath[i];
         const to = routePath[i + 1];
         const dist = haversineDistance(from, to);
         
-        if (dist > DISTANCE_THRESHOLD_KM) {
-            farSegments.push([[from.lat, from.lng], [to.lat, to.lng]]);
-        } else {
-            normalSegments.push([[from.lat, from.lng], [to.lat, to.lng]]);
-        }
+        // Determine if this is a far segment
+        const isFar = dist > DISTANCE_THRESHOLD_KM;
+        
+        // Create polyline segment
+        const segment = [[from.lat, from.lng], [to.lat, to.lng]];
+        const polyline = L.polyline(segment, {
+            color: isFar ? '#ef4444' : '#2563eb',
+            weight: 5,
+            opacity: 0.9,
+            dashArray: isFar ? '10, 10' : null,
+            smoothFactor: 1
+        }).addTo(map);
+        
+        routePolylines.push(polyline);
+        
+        // Add distance label at midpoint of segment
+        const midLat = (from.lat + to.lat) / 2;
+        const midLng = (from.lng + to.lng) / 2;
+        
+        const distanceLabel = L.marker([midLat, midLng], {
+            icon: L.divIcon({
+                className: 'distance-label',
+                html: `<div style="
+                    background: ${isFar ? '#ef4444' : '#2563eb'};
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 12px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    white-space: nowrap;
+                    border: 2px solid white;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                    text-align: center;
+                ">${dist.toFixed(1)} km</div>`,
+                iconSize: [60, 20],
+                iconAnchor: [30, 10]
+            })
+        }).addTo(map);
+        
+        distanceLabels.push(distanceLabel);
+        
+        // Add popup with detailed info
+        polyline.bindPopup(`
+            <strong>Route Segment ${i + 1}</strong><br>
+            Distance: ${dist.toFixed(2)} km<br>
+            ${isFar ? '<span style="color: #ef4444;">⚠️ Long distance segment</span>' : ''}
+        `);
     }
-    
-    // Draw normal segments in blue
-    normalSegments.forEach(segment => {
-        L.polyline(segment, {
-            color: '#2563eb',
-            weight: 4,
-            opacity: 0.8,
-            smoothFactor: 1
-        }).addTo(map);
-    });
-    
-    // Draw far segments in red
-    farSegments.forEach(segment => {
-        L.polyline(segment, {
-            color: '#ef4444',
-            weight: 4,
-            opacity: 0.8,
-            dashArray: '10, 10',
-            smoothFactor: 1
-        }).addTo(map);
-    });
     
     // Add markers for each place in optimized order
     routeOrder.forEach((placeIdx, orderNum) => {
@@ -315,37 +389,52 @@ function renderRoute() {
                 html: `<div style="
                     background: #2563eb;
                     color: white;
-                    width: 30px;
-                    height: 30px;
+                    width: 35px;
+                    height: 35px;
                     border-radius: 50%;
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     font-weight: bold;
+                    font-size: 14px;
                     border: 3px solid white;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
                 ">${orderNum + 1}</div>`,
-                iconSize: [30, 30],
-                iconAnchor: [15, 15]
+                iconSize: [35, 35],
+                iconAnchor: [17.5, 17.5]
             })
         }).addTo(map);
         
+        // Calculate distance from previous place if available
+        let distanceInfo = '';
+        if (orderNum > 0) {
+            const prevPlaceIdx = routeOrder[orderNum - 1];
+            const prevPlace = selectedPlaces[prevPlaceIdx];
+            if (prevPlace) {
+                const dist = haversineDistance(prevPlace.coordinates, place.coordinates);
+                distanceInfo = `<br><strong>Distance from previous:</strong> ${dist.toFixed(2)} km`;
+            }
+        }
+        
         marker.bindPopup(`
             <strong>Stop ${orderNum + 1}: ${place.name}</strong><br>
-            ${place.description}
+            ${place.description}${distanceInfo}
         `);
         
         markers.push(marker);
     });
     
-    // Fit map to show all markers
+    // Fit map to show all markers and routes
     if (markers.length > 0) {
-        const group = new L.featureGroup(markers);
-        map.fitBounds(group.getBounds().pad(0.1));
+        const allFeatures = [...markers, ...routePolylines];
+        const group = new L.featureGroup(allFeatures);
+        map.fitBounds(group.getBounds().pad(0.15));
     }
     
     // Hide loading message
     hideMapMessage();
+    
+    console.log('Route rendered successfully with', routePolylines.length, 'segments');
 }
 
 /**
@@ -376,12 +465,25 @@ function displayResults() {
         const place = selectedPlaces[placeIdx];
         if (!place) return;
         
+        // Calculate distance from previous place
+        let distanceText = '';
+        if (orderNum > 0) {
+            const prevPlaceIdx = optimizedRoute.order[orderNum - 1];
+            const prevPlace = selectedPlaces[prevPlaceIdx];
+            if (prevPlace) {
+                const dist = haversineDistance(prevPlace.coordinates, place.coordinates);
+                distanceText = `<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(${dist.toFixed(1)} km)</span>`;
+            }
+        } else {
+            distanceText = '<span style="color: var(--text-secondary); font-size: 0.75rem; margin-left: 0.5rem;">(Start)</span>';
+        }
+        
         const listItem = document.createElement('li');
         listItem.className = 'route-item';
         
         listItem.innerHTML = `
             <div class="route-number">${orderNum + 1}</div>
-            <div class="route-name">${place.name}</div>
+            <div class="route-name">${place.name}${distanceText}</div>
         `;
         
         routeList.appendChild(listItem);
@@ -434,20 +536,29 @@ function formatTime(hours) {
  * Clear map markers and routes
  */
 function clearMap() {
-    markers.forEach(marker => map.removeLayer(marker));
-    markers = [];
-    
-    if (routePolyline) {
-        map.removeLayer(routePolyline);
-        routePolyline = null;
-    }
-    
-    // Remove all polylines
-    map.eachLayer(layer => {
-        if (layer instanceof L.Polyline) {
-            map.removeLayer(layer);
+    // Remove all markers
+    markers.forEach(marker => {
+        if (map.hasLayer(marker)) {
+            map.removeLayer(marker);
         }
     });
+    markers = [];
+    
+    // Remove all route polylines
+    routePolylines.forEach(polyline => {
+        if (map.hasLayer(polyline)) {
+            map.removeLayer(polyline);
+        }
+    });
+    routePolylines = [];
+    
+    // Remove all distance labels
+    distanceLabels.forEach(label => {
+        if (map.hasLayer(label)) {
+            map.removeLayer(label);
+        }
+    });
+    distanceLabels = [];
 }
 
 /**
